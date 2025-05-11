@@ -1,12 +1,13 @@
-from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 import subprocess
 import json
-# Create your views here.
 
-# vue pour la recherche
+# Playlist globale en mémoire (utile pour les tests)
+playlist = []
+
+# 🔍 Vue de recherche YouTube avec yt-dlp
 def search_video(request):
     query = request.GET.get('q', '')
     if not query:
@@ -19,34 +20,36 @@ def search_video(request):
         if not result.stdout.strip():
             return JsonResponse({'error': 'Aucune sortie de yt-dlp'}, status=500)
 
+        # Parse chaque ligne JSON retournée par yt-dlp
         lines = result.stdout.strip().split('\n')
         videos = []
         for line in lines:
             try:
                 videos.append(json.loads(line))
-            except json.JSONDecodeError as e:
-                print(f"Erreur JSON sur la ligne : {line}")
-                continue
+            except json.JSONDecodeError:
+                continue  # Ignore les lignes mal formées
 
+        # Formater la réponse pour le frontend
         response = [
             {
                 'id': v['id'],
                 'title': v['title'],
                 'url': v['webpage_url'],
-                'duration': v['duration'],
-                'thumbnail': v['thumbnail'],
+                'duration': v.get('duration'),
+                'thumbnail': v.get('thumbnail'),
             }
             for v in videos
         ]
         return JsonResponse(response, safe=False)
     except subprocess.CalledProcessError as e:
         print("Erreur subprocess:", e.stderr)
-        return JsonResponse({'error': 'yt-dlp a échoué à exécuter la commande.'}, status=500)
+        return JsonResponse({'error': 'Erreur avec yt-dlp'}, status=500)
 
-
+# ➕ Ajouter une vidéo à la playlist
 @csrf_exempt
 @require_POST
 def add_to_playlist(request):
+    global playlist
     try:
         data = json.loads(request.body)
         video = {
@@ -57,20 +60,15 @@ def add_to_playlist(request):
             'duration': data.get('duration'),
         }
 
-        # Initialiser la playlist si elle n’existe pas
-        if 'playlist' not in request.session:
-            request.session['playlist'] = []
-
-        # Ajouter la chanson si moins de 20 chansons
-        if len(request.session['playlist']) < 20:
-            request.session['playlist'].append(video)
-            request.session.modified = True
+        # Limite à 20 vidéos
+        if len(playlist) < 20:
+            playlist.append(video)
             return JsonResponse({'message': 'Ajouté à la playlist'}, status=200)
         else:
-            return JsonResponse({'error': 'Limite de 20 chansons atteinte'}, status=400)
+            return JsonResponse({'error': 'Limite de 20 vidéos atteinte'}, status=400)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
+# 📥 Récupérer la playlist actuelle
 def get_playlist(request):
-    playlist = request.session.get('playlist', [])
     return JsonResponse(playlist, safe=False)
