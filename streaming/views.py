@@ -72,3 +72,24 @@ def add_to_playlist(request):
 # 📥 Récupérer la playlist actuelle
 def get_playlist(request):
     return JsonResponse(playlist, safe=False)
+
+
+# stream audio
+def stream_audio(request):
+    video_id = request.GET.get('id')
+    if not video_id:
+        return JsonResponse({'error': 'ID manquant'}, status=400)
+
+    try:
+        cmd = [
+            'yt-dlp',
+            f'https://www.youtube.com/watch?v={video_id}',
+            '-f', 'bestaudio',
+            '-g'  # pour obtenir l'URL directe
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        direct_url = result.stdout.strip()
+
+        return JsonResponse({'url': direct_url})
+    except subprocess.CalledProcessError as e:
+        return JsonResponse({'error': 'Impossible de générer l’URL'}, status=500)

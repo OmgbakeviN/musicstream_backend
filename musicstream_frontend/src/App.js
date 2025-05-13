@@ -1,10 +1,11 @@
-import './App.css';
 import React, { useState, useEffect } from 'react';
+import Player from './Player'; 
 
 function App() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [playlist, setPlaylist] = useState([]);
+  const [showPlayer, setShowPlayer] = useState(false);
 
   const searchSongs = async () => {
     const response = await fetch(`http://127.0.0.1:8000/api/search/?q=${query}`);
@@ -15,18 +16,10 @@ function App() {
   const addToPlaylist = async (video) => {
     await fetch('http://127.0.0.1:8000/api/playlist/add/', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        id: video.id,
-        title: video.title,
-        url: video.url,
-        thumbnail: video.thumbnail
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(video)
     });
 
-    // Recharge la playlist après ajout
     fetchPlaylist();
   };
 
@@ -37,13 +30,12 @@ function App() {
   };
 
   useEffect(() => {
-    fetchPlaylist(); // Charger au démarrage
+    fetchPlaylist();
   }, []);
 
-
-  return(
-  <div className="App">
-      <h1>🎵 Music Stream 🎵</h1>
+  return (
+    <div className="App">
+      <h1>🎵 Music Stream</h1>
 
       <div>
         <input
@@ -71,6 +63,12 @@ function App() {
           <li key={index}>{item.title}</li>
         ))}
       </ul>
+
+      <button onClick={() => setShowPlayer(true)} disabled={playlist.length === 0}>
+        ▶️ Lire la playlist
+      </button>
+
+      {showPlayer && <Player playlist={playlist} />}
     </div>
   );
 }
