@@ -1,8 +1,11 @@
-from django.http import JsonResponse
+from django.http import JsonResponse, FileResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_POST, require_GET
 import subprocess
 import json
+import os 
+import yt_dlp
+import uuid
 
 # Playlist globale en mémoire (utile pour les tests)
 playlist = []
@@ -93,3 +96,55 @@ def stream_audio(request):
         return JsonResponse({'url': direct_url})
     except subprocess.CalledProcessError as e:
         return JsonResponse({'error': 'Impossible de générer l’URL'}, status=500)
+    
+
+@require_GET
+def download_media(request):
+    video_id = request.GET.get('id')
+    mode = request.GET.get('mode', 'audio')  # 'audio' ou 'video'
+
+    if not video_id:
+        return JsonResponse({'error': 'ID manquant'}, status=400)
+
+    filename = f"{uuid.uuid4()}.%(ext)s"
+    output_path = f"/tmp/{filename}"
+
+    # Commande yt-dlp optimisée
+    if mode == 'video':
+        # Format vidéo léger (par exemple 360p ou 480p avec audio intégré)
+        cmd = [
+            'yt-dlp',
+            '-f', '18',  # Format 18 = mp4 360p avec audio (léger)
+            f"https://www.youtube.com/watch?v={video_id}",
+            '-o', output_path
+        ]
+    else:  # audio
+        # MP3 avec bitrate raisonnable
+        cmd = [
+            'yt-dlp',
+            '-f', 'bestaudio',
+            '--extract-audio',
+            '--audio-format', 'mp3',
+            '--audio-quality', '5',  # Valeurs de 0 (meilleur) à 9 (moins bon)
+            f"https://www.youtube.com/watch?v={video_id}",
+            '-o', output_path
+        ]
+
+    try:
+        subprocess.run(cmd, check=True)
+
+        # Chercher le fichier généré
+        base_output = output_path.replace('%(ext)s', '')
+        actual_file = next(
+            (f for f in os.listdir('/tmp') if f.startswith(os.path.basename(base_output))),
+            None
+        )
+
+        if actual_file:
+            file_path = os.path.join('/tmp', actual_file)
+            return FileResponse(open(file_path, 'rb'), as_attachment=True)
+        else:
+            return JsonResponse({'error': 'Fichier non trouvé après téléchargement.'}, status=500)
+
+    except subprocess.CalledProcessError as e:
+        return JsonResponse({'error': 'Erreur yt-dlp', 'details': str(e)}, status=500)

@@ -64,6 +64,19 @@ function Player({ playlist }) {
         >
           ⏭️ Suivant
         </button>
+
+        <button onClick={() => {
+          const mode = isVideo ? 'video' : 'audio';
+          const id = currentTrack?.id;
+          if (id) {
+            window.open(`http://127.0.0.1:8000/api/download/?id=${id}&mode=${mode}`, '_blank');
+          } else {
+            alert("Aucune vidéo sélectionnée.");
+          }
+        }}>
+          ⬇️ Télécharger
+        </button>
+
       </div>
     </div>
   );

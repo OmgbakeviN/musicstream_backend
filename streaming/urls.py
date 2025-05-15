@@ -7,5 +7,5 @@ urlpatterns = [
     path('playlist/add/', add_to_playlist, name='add_to_playlist'),
     path('playlist/', get_playlist, name='get_playlist'),
     path('stream/',views.stream_audio),
-
+    path('download/', views.download_media, name='download_media'),
 ]
