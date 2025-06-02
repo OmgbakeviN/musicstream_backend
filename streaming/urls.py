@@ -8,4 +8,5 @@ urlpatterns = [
     path('playlist/', get_playlist, name='get_playlist'),
     path('stream/',views.stream_audio),
     path('download/', views.download_media, name='download_media'),
+    path('playlist/remove/<str:video_id>/', views.remove_from_playlist),
 ]
