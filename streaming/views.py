@@ -2,12 +2,22 @@ from django.http import JsonResponse, FileResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_GET, require_http_methods
 from django.utils.text import slugify
+from django.core.cache import cache
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework_simplejwt.tokens import RefreshToken
+from .models import PlaylistItem
+from .serializers import RegisterSerializer
 import subprocess
 import json
 import os 
 import yt_dlp
 import uuid
 import requests
+import logging
 
 # Playlist globale en mémoire (utile pour les tests)
 playlist = []
@@ -77,40 +87,108 @@ def search_video(request):
         return JsonResponse({'error': str(e)}, status=500)
 
 
-# ➕ Ajouter une vidéo à la playlist
-@csrf_exempt
-@require_POST
+#v1 ➕ Ajouter une vidéo à la playlist
+# @csrf_exempt
+# @require_POST
+# def add_to_playlist(request):
+#     global playlist
+#     try:
+#         data = json.loads(request.body)
+#         video = {
+#             'id': data['id'],
+#             'title': data['title'],
+#             'url': data['url'],
+#             'thumbnail': data.get('thumbnail'),
+#             'duration': data.get('duration'),
+#         }
+
+#         # Limite à 20 vidéos
+#         if len(playlist) < 20:
+#             playlist.append(video)
+#             return JsonResponse({'message': 'Ajouté à la playlist'}, status=200)
+#         else:
+#             return JsonResponse({'error': 'Limite de 20 vidéos atteinte'}, status=400)
+#     except Exception as e:
+#         return JsonResponse({'error': str(e)}, status=500)
+
+#v2 ➕ Ajouter une vidéo à la playlist
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def add_to_playlist(request):
-    global playlist
-    try:
-        data = json.loads(request.body)
-        video = {
-            'id': data['id'],
-            'title': data['title'],
-            'url': data['url'],
-            'thumbnail': data.get('thumbnail'),
-            'duration': data.get('duration'),
-        }
+    user = request.user
+    data = request.data
 
-        # Limite à 20 vidéos
-        if len(playlist) < 20:
-            playlist.append(video)
-            return JsonResponse({'message': 'Ajouté à la playlist'}, status=200)
-        else:
-            return JsonResponse({'error': 'Limite de 20 vidéos atteinte'}, status=400)
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+    # Limiter à 20 vidéos par utilisateur
+    if PlaylistItem.objects.filter(user=user).count() >= 20:
+        return Response({'error': 'Limite de 20 vidéos atteinte'}, status=400)
 
-# 📥 Récupérer la playlist actuelle
+    # Créer l'élément
+    PlaylistItem.objects.create(
+        user=user,
+        video_id=data['id'],
+        title=data['title'],
+        url=data['url'],
+        thumbnail=data.get('thumbnail'),
+        duration=data.get('duration')
+    )
+    return Response({'message': 'Ajouté à la playlist'}, status=200)
+
+#v1 📥 Récupérer la playlist actuelle
+# def get_playlist(request):
+#     return JsonResponse(playlist, safe=False)
+
+#v2 get playlist par user
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_playlist(request):
-    return JsonResponse(playlist, safe=False)
+    user = request.user
+    items = PlaylistItem.objects.filter(user=user)
+    data = [
+        {
+            'id': item.video_id,
+            'title': item.title,
+            'url': item.url,
+            'thumbnail': item.thumbnail,
+            'duration': item.duration,
+        }
+        for item in items
+    ]
+    return Response(data)
 
+# V1 stream audio
+# def stream_audio(request):
+#     video_id = request.GET.get('id')
+#     if not video_id:
+#         return JsonResponse({'error': 'ID manquant'}, status=400)
+
+#     try:
+#         cmd = [
+#             'yt-dlp',
+#             f'https://www.youtube.com/watch?v={video_id}',
+#             '-f', 'bestaudio',
+#             '-g'  # pour obtenir l'URL directe
+#         ]
+#         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+#         direct_url = result.stdout.strip()
+
+#         return JsonResponse({'url': direct_url})
+#     except subprocess.CalledProcessError as e:
+#         return JsonResponse({'error': 'Impossible de générer l’URL'}, status=500)
+
+# V2 streaming
+logger = logging.getLogger(__name__)
 
 # stream audio
 def stream_audio(request):
     video_id = request.GET.get('id')
     if not video_id:
         return JsonResponse({'error': 'ID manquant'}, status=400)
+
+    # Vérifier le cache d'abord
+    cache_key = f'audio_url_{video_id}'
+    cached_url = cache.get(cache_key)
+    if cached_url:
+        return JsonResponse({'url': cached_url})
 
     try:
         cmd = [
@@ -119,13 +197,43 @@ def stream_audio(request):
             '-f', 'bestaudio',
             '-g'  # pour obtenir l'URL directe
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            check=True,
+            timeout=100  # timeout après 10 secondes
+        )
+        
         direct_url = result.stdout.strip()
+        
+        if not direct_url:
+            raise ValueError("URL vide reçue de yt-dlp")
 
+        # Mettre en cache pour 6 heures (21600 secondes)
+        cache.set(cache_key, direct_url, timeout=21600)
+        
         return JsonResponse({'url': direct_url})
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout lors de la récupération de l'audio pour {video_id}")
+        return JsonResponse(
+            {'error': 'Le traitement a pris trop de temps'},
+            status=504
+        )
     except subprocess.CalledProcessError as e:
-        return JsonResponse({'error': 'Impossible de générer l’URL'}, status=500)
-    
+        logger.error(f"Erreur yt-dlp pour {video_id}: {e.stderr}")
+        return JsonResponse(
+            {'error': 'Impossible de générer l\'URL audio'},
+            status=502
+        )
+    except Exception as e:
+        logger.error(f"Erreur inattendue pour {video_id}: {str(e)}")
+        return JsonResponse(
+            {'error': 'Erreur interne du serveur'},
+            status=500
+        )
 
 @require_GET
 def download_media(request):
@@ -194,17 +302,48 @@ def download_media(request):
     except subprocess.CalledProcessError as e:
         return JsonResponse({'error': 'Erreur yt-dlp', 'details': str(e)}, status=500)
 
+# v1 remove from playlist
+# @csrf_exempt
+# @require_http_methods(["DELETE"])
+# def remove_from_playlist(request, video_id):
+#     global playlist
+#     original_len = len(playlist)
 
-@csrf_exempt
-@require_http_methods(["DELETE"])
+#     # Supprimer seulement les éléments dont l'ID correspond strictement
+#     playlist = [item for item in playlist if str(item.get('id')) != str(video_id)]
+
+#     if len(playlist) == original_len:
+#         return JsonResponse({'error': 'Vidéo non trouvée dans la playlist'}, status=404)
+
+#     return JsonResponse({'message': 'Vidéo retirée avec succès'})
+
+# v2 remove playlist
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
 def remove_from_playlist(request, video_id):
-    global playlist
-    original_len = len(playlist)
+    user = request.user
+    item = PlaylistItem.objects.filter(user=user, video_id=video_id).first()
 
-    # Supprimer seulement les éléments dont l'ID correspond strictement
-    playlist = [item for item in playlist if str(item.get('id')) != str(video_id)]
+    if not item:
+        return Response({'error': 'Vidéo non trouvée'}, status=404)
 
-    if len(playlist) == original_len:
-        return JsonResponse({'error': 'Vidéo non trouvée dans la playlist'}, status=404)
+    item.delete()
+    return Response({'message': 'Vidéo supprimée'})
 
-    return JsonResponse({'message': 'Vidéo retirée avec succès'})
+
+class RegisterView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+
+            # Créer un token JWT pour connecter automatiquement
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+                'message': 'Utilisateur créé avec succès',
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
